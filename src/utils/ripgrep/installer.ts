@@ -15,14 +15,16 @@ import * as path from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
-import { rgUserBinary, rgUserDir } from './layout.js'
+import { findWritablePathDir, rgUserBinary, rgUserDir } from './layout.js'
 import { isMainlandChinaExit, rankedMirrors } from './mirrors.js'
 
-// Download / self-update for the managed rg binary (~/.claude/vendor).
+// Download / self-update for ripgrep. Install target follows ripgrep's
+// official convention: copy the binary into a writable $PATH directory so
+// it becomes system-wide usable (`rg` in any shell); when no PATH entry is
+// writable, fall back to the private ~/.claude vendor dir. Self-update
+// scope is the private dir only — PATH installs are owned by the system.
 // Resolution priority lives in config.ts: system PATH rg first, then this
-// auto-downloaded binary, then the repo-vendored fallback. When the
-// managed binary is present but older than RG_VERSION a silent background
-// update stages into /tmp, verifies, and atomically swaps it in.
+// auto-downloaded binary, then the repo-vendored fallback.
 
 export const RG_VERSION = '15.2.0'
 
@@ -53,7 +55,10 @@ export function rgAssetSpec(platform: string, arch: string): AssetSpec | null {
 
 function versionStamp(): string | null {
   try {
-    return readFileSync(path.resolve(rgUserDir(), '.version'), 'utf8').trim()
+    return readFileSync(
+      path.resolve(rgUserDir(), VERSION_STAMP_NAME),
+      'utf8',
+    ).trim()
   } catch {
     return null
   }
@@ -152,11 +157,22 @@ async function installRipgrep(): Promise<boolean> {
   }
 }
 
-/** Stage the verified binary into the user vendor layout (tmp → rename). */
+const VERSION_STAMP_NAME = '.ccb-rg-version'
+
+/**
+ * Stage the verified binary into place. Preferred target: a writable $PATH
+ * directory (system-wide, per ripgrep's official install convention);
+ * fallback: the private ~/.claude vendor dir. Staged tmp file → rename for
+ * atomicity.
+ */
 function installBinary(src: string): void {
-  const destDir = rgUserDir()
+  const systemDir = findWritablePathDir()
+  const destDir = systemDir ?? rgUserDir()
   mkdirSync(destDir, { recursive: true })
-  const destBin = rgUserBinary()
+  const destBin = path.resolve(
+    destDir,
+    process.platform === 'win32' ? 'rg.exe' : 'rg',
+  )
   const staging = `${destBin}.download`
   copyFileSync(src, staging)
   if (process.platform !== 'win32') chmodSync(staging, 0o755)
@@ -167,7 +183,7 @@ function installBinary(src: string): void {
     // back to a direct copy — the next update attempt will retry.
     copyFileSync(src, destBin)
   }
-  writeFileSync(path.resolve(destDir, '.version'), RG_VERSION)
+  writeFileSync(path.resolve(destDir, VERSION_STAMP_NAME), RG_VERSION)
 }
 
 async function downloadArchive(url: string): Promise<Buffer | null> {

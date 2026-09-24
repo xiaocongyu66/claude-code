@@ -1,3 +1,4 @@
+import { unlinkSync, writeFileSync } from 'fs'
 import * as path from 'path'
 import { distRoot } from '../distRoot.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
@@ -26,6 +27,38 @@ export function rgUserDir(platform = process.platform, arch = process.arch): str
     'ripgrep',
     platformDir(platform, arch),
   )
+}
+
+/**
+ * First writable directory in $PATH — where a system-wide rg install goes
+ * (per ripgrep's official convention: copy the binary into a PATH dir;
+ * /usr/local/bin first on Unix as the customary user-managed location).
+ * Returns null when no PATH entry is writable (→ caller falls back to the
+ * private user dir).
+ */
+export function findWritablePathDir(): string | null {
+  const sep = process.platform === 'win32' ? ';' : ':'
+  const entries = (process.env.PATH ?? process.env.Path ?? '')
+    .split(sep)
+    .map(p => p.trim())
+    .filter(p => p.length > 0)
+  // Prefer the customary Unix install location when it's on PATH.
+  entries.sort((a, b) => {
+    const rank = (p: string) =>
+      p === '/usr/local/bin' ? 0 : p.endsWith('/bin') || p.endsWith('\\bin') ? 1 : 2
+    return rank(a) - rank(b)
+  })
+  for (const dir of entries) {
+    try {
+      const probe = path.resolve(dir, `.ccb-rg-probe-${process.pid}`)
+      writeFileSync(probe, '')
+      unlinkSync(probe)
+      return dir
+    } catch {
+      // not writable — next entry
+    }
+  }
+  return null
 }
 
 export function rgUserBinary(
