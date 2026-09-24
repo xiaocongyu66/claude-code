@@ -27,31 +27,58 @@ export const RG_VERSION = '15.2.0'
 
 const RG_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
 
-// Prefix-style GitHub release accelerators. Only used when the exit IP is
-// in mainland China (direct GitHub is fine elsewhere). CCB_RG_MIRRORS
-// (comma-separated) overrides this list. All of them fall back to the
-// official URL when none passes the speed test.
-const DEFAULT_MIRRORS = [
+const GH_REPO = 'xiaocongyu66/claude-code'
+const REPO_TAG = 'main'
+
+// The live mirror list lives in the repo (ghproxy.txt, one proxy per line)
+// so proxies can be added/retired without shipping code. Fetched via
+// jsDelivr git-tree CDNs — first valid responder wins. Priority:
+// CCB_RG_MIRRORS env > remote ghproxy.txt > built-in fallback below.
+const MIRROR_LIST_HOSTS = [
+  'https://cdn.jsdmirror.com',
+  'https://gcore.jsdelivr.net',
+  'https://cdn.jsdelivr.net',
+]
+const MIRROR_LIST_PATH = `gh/${GH_REPO}@${REPO_TAG}/ghproxy.txt`
+
+const FALLBACK_MIRRORS = [
   'https://ghproxy.net',
   'https://gh-proxy.com',
   'https://ghfast.top',
   'https://ghproxy.vip',
   'https://gh.llkk.cc',
-  'https://gh-proxy.ygxz.in',
   'https://github.akams.cn',
   'https://gh.jasonzeng.dev',
-  'https://gh.felicity.ac.cn',
   'https://gitproxy.dev',
-  'https://gh.con.sh',
-  'https://gh.ddlc.top',
-  'https://ghps.cc',
-  'https://git.xfj0.cn',
-  'https://github.91chi.fun',
-  'https://proxy.zyun.vip',
-  'https://gh2.yanqishui.work',
-  'https://ghdl.feizhuqwq.cf',
-  'https://gh.api.99988866.xyz',
 ]
+
+let remoteMirrorCache: string[] | null = null
+
+async function fetchRemoteMirrorList(): Promise<string[] | null> {
+  if (remoteMirrorCache) return remoteMirrorCache
+  try {
+    const lines = await Promise.any(
+      MIRROR_LIST_HOSTS.map(async host => {
+        const res = await fetch(`${host}/${MIRROR_LIST_PATH}`, {
+          signal: AbortSignal.timeout(6_000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const parsed = (await res.text())
+          .split('\n')
+          .map(l => l.trim().replace(/\/$/, ''))
+          .filter(l => /^https?:\/\/[\w.-]/.test(l))
+        if (parsed.length === 0) throw new Error('empty mirror list')
+        return parsed
+      }),
+    )
+    remoteMirrorCache = lines
+    logForDebugging(`[rg-install] remote mirror list: ${lines.length} proxies`)
+    return lines
+  } catch {
+    logForDebugging('[rg-install] remote mirror list unavailable; using fallback')
+    return null
+  }
+}
 
 // ── exit IP detection ────────────────────────────────────────────────────────
 
@@ -112,7 +139,7 @@ export async function rankedMirrors(githubUrl: string): Promise<string[]> {
   const bases = (
     process.env.CCB_RG_MIRRORS
       ? process.env.CCB_RG_MIRRORS.split(',').map(m => m.trim())
-      : DEFAULT_MIRRORS
+      : (await fetchRemoteMirrorList()) ?? FALLBACK_MIRRORS
   )
     .map(m => m.replace(/\/$/, ''))
     .filter(m => /^https?:\/\//.test(m))
