@@ -42,6 +42,29 @@ const MIRROR_LIST_HOSTS = [
 ]
 const MIRROR_LIST_PATH = `gh/${GH_REPO}@${REPO_TAG}/ghproxy.txt`
 
+// Offline fallback when every jsDelivr CDN fails to serve ghproxy.txt.
+const FALLBACK_MIRRORS = [
+  'https://ghproxy.net',
+  'https://gh.felicity.ac.cn',
+  'https://gh.jasonzeng.dev',
+  'https://github.akams.cn',
+  'https://ghproxy.vip',
+  'https://gh-proxy.ygxz.in',
+  'https://gh.llkk.cc',
+  'https://gh.api.99988866.xyz',
+  'https://gh.con.sh',
+  'https://gh.ddlc.top',
+  'https://gh2.yanqishui.work',
+  'https://ghdl.feizhuqwq.cf',
+  'https://ghproxy.com',
+  'https://ghps.cc',
+  'https://git.xfj0.cn',
+  'https://github.91chi.fun',
+  'https://proxy.zyun.vip',
+  'https://gh-proxy.com',
+  'https://ghfast.top',
+]
+
 let remoteMirrorCache: string[] | null = null
 
 async function fetchRemoteMirrorList(): Promise<string[] | null> {
@@ -129,7 +152,7 @@ export async function rankedMirrors(githubUrl: string): Promise<string[]> {
   const bases = (
     process.env.CCB_RG_MIRRORS
       ? process.env.CCB_RG_MIRRORS.split(',').map(m => m.trim())
-      : ((await fetchRemoteMirrorList()) ?? [])
+      : ((await fetchRemoteMirrorList()) ?? FALLBACK_MIRRORS)
   )
   const speeds = await Promise.all(
     bases.map(async m => ({ m, s: await speedTestMirror(m, githubUrl) })),
