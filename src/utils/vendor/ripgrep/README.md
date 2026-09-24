@@ -10,8 +10,9 @@ Layout mirrors `getRipgrepConfig()` in `src/utils/ripgrep.ts`:
 `<arch>-<platform>/rg` (Windows: `<arch>-win32/rg.exe`).
 
 Platforms without a vendored binary are auto-downloaded on first use by
-`src/utils/ripgrepInstaller.ts` (ripgrep 15.2.0). `CCB_RG_SKIP_DOWNLOAD=1`
-disables the download; `CCB_RG_MIRRORS` overrides the mirror list
-(prefix-style proxies such as `https://gh-proxy.com`, comma-separated;
-mirrors are tried in order with magic-byte validation against HTML error
-pages).
+`src/utils/ripgrepInstaller.ts` (ripgrep 15.2.0). Exit-IP aware: mainland
+China egress runs a parallel 2 MB speed test across the mirror list and
+downloads from the fastest (official URL as final fallback); other egress
+goes direct. Existing-but-stale vendored binaries self-update silently in
+the background (staged in /tmp, atomically swapped). `CCB_RG_SKIP_DOWNLOAD=1`
+disables downloads; `CCB_RG_MIRRORS` overrides the mirror list.

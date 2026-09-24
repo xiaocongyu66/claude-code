@@ -13,7 +13,7 @@ import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
-import { ensureVendoredRipgrep } from './ripgrepInstaller.js'
+import { ensureVendoredRipgrep, refreshIfStale } from './ripgrepInstaller.js'
 import { countCharInString } from './stringUtils.js'
 
 const __dirname = (() => {
@@ -132,15 +132,20 @@ export function ripgrepCommand(): {
 
 /**
  * Awaitable pre-flight before spawning rg. When the vendored binary is
- * missing (fresh clone, uncommon platform) it downloads the official
- * release asset once, then invalidates the memoized config so the retry
- * resolves to the freshly installed builtin. Embedded and system modes
+ * missing (fresh clone, uncommon platform) it downloads the release asset
+ * once (mirror-accelerated on CN exits), then invalidates the memoized
+ * config so the retry resolves to the freshly installed builtin. When the
+ * binary exists but is stale, a silent background update runs instead —
+ * the current call keeps using the old binary. Embedded and system modes
  * pass through immediately.
  */
 export async function ensureRipgrepAvailable(): Promise<void> {
   const config = getRipgrepConfig()
   if (config.mode !== 'builtin') return
-  if (existsSync(config.command)) return
+  if (existsSync(config.command)) {
+    refreshIfStale(() => getRipgrepConfig.cache.clear())
+    return
+  }
   const installed = await ensureVendoredRipgrep()
   if (installed) {
     getRipgrepConfig.cache.clear()
