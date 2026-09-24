@@ -13,6 +13,7 @@ import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
+import { ensureVendoredRipgrep } from './ripgrepInstaller.js'
 import { countCharInString } from './stringUtils.js'
 
 const __dirname = (() => {
@@ -126,6 +127,24 @@ export function ripgrepCommand(): {
     rgPath: config.command,
     rgArgs: config.args,
     argv0: config.argv0,
+  }
+}
+
+/**
+ * Awaitable pre-flight before spawning rg. When the vendored binary is
+ * missing (fresh clone, uncommon platform) it downloads the official
+ * release asset once, then invalidates the memoized config so the retry
+ * resolves to the freshly installed builtin. Embedded and system modes
+ * pass through immediately.
+ */
+export async function ensureRipgrepAvailable(): Promise<void> {
+  const config = getRipgrepConfig()
+  if (config.mode !== 'builtin') return
+  if (existsSync(config.command)) return
+  const installed = await ensureVendoredRipgrep()
+  if (installed) {
+    getRipgrepConfig.cache.clear()
+    logForDebugging('[rg] vendored ripgrep installed; config re-resolved')
   }
 }
 
@@ -351,6 +370,7 @@ export async function ripGrepStream(
   abortSignal: AbortSignal,
   onLines: (lines: string[]) => void,
 ): Promise<void> {
+  await ensureRipgrepAvailable()
   await codesignRipgrepIfNecessary()
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
 
@@ -400,6 +420,7 @@ export async function ripGrep(
   target: string,
   abortSignal: AbortSignal,
 ): Promise<string[]> {
+  await ensureRipgrepAvailable()
   await codesignRipgrepIfNecessary()
 
   // Test ripgrep on first use and cache the result (fire and forget)
