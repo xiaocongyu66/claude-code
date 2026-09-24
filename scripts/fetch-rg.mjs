@@ -44,6 +44,7 @@ const TARGETS = [
     assetTriple: 'x86_64-unknown-linux-musl',
     ext: 'tar.gz',
   },
+
   {
     triple: 'aarch64-unknown-linux-gnu',
     dir: 'arm64-linux',
@@ -66,6 +67,12 @@ const TARGETS = [
     triple: 'x86_64-pc-windows-msvc',
     dir: 'x64-win32',
     assetTriple: 'x86_64-pc-windows-msvc',
+    ext: 'zip',
+  },
+  {
+    triple: 'aarch64-pc-windows-msvc',
+    dir: 'arm64-win32',
+    assetTriple: 'aarch64-pc-windows-msvc',
     ext: 'zip',
   },
 ]
@@ -201,81 +208,67 @@ async function ensureTarget(t) {
   return false
 }
 
-// ── bfs/ugrep：search-tools-prebuilt 自建 release（计划书 1.4） ─────────────
-// 资产是裸二进制（非压缩包）：bfs-<triple> / ugrep-<triple>，直接落 vendor。
-const SEARCH_TOOLS_BASE = `https://github.com/xiaocongyu66/search-tools-prebuilt/releases/download`
+// ── bfs/ugrep：CI native matrix 现场构建（与 Rust .node 同 artifact 流） ────
+// 本脚本不做远程拉取——CI 场景由 native artifact 直接填充 vendor/search-tools/，
+// 本地构建需先下载 native artifact 解到 vendor/。完整性闸门见文件尾：
+// bfs 4 平台 + ugrep 5 平台缺一即 exit 1（bfs-windows 豁免，上游无官方支持）。
 
-// workflow triple → rg 的 vendor 目录布局（<arch>-<platform>）
-const SEARCH_TOOL_TRIPLES = {
-  'x64-linux': 'x86_64-unknown-linux-musl',
-  'arm64-linux': 'aarch64-unknown-linux-musl',
-  'x64-darwin': 'x86_64-apple-darwin',
-  'arm64-darwin': 'aarch64-apple-darwin',
-}
+// ugrep Windows：官方单平台资产（ugrep-windows-x64.zip，裸 exe 落 vendor）。
+// arm64-win32 官方无资产 → 完整性闸门豁免（运行时工具级降级）。
+const UGREP_WIN_TAG = 'v7.8.5'
 
-async function searchToolsReleaseTag() {
+async function ensureUgrepWin() {
+  const destDir = join('src', 'utils', 'vendor', 'search-tools', 'x64-win32')
+  const destBin = join(destDir, 'ugrep.exe')
+  if (existsSync(destBin)) {
+    console.log('[fetch-search] x64-win32/ugrep: already present, skipping')
+    return true
+  }
+  let tag = UGREP_WIN_TAG
   try {
-    // latest release 的 redirect（免 API 限流）
     const res = await fetch(
-      'https://github.com/xiaocongyu66/search-tools-prebuilt/releases/latest',
+      'https://github.com/Genivia/ugrep/releases/latest',
       {
         method: 'HEAD',
         redirect: 'follow',
         signal: AbortSignal.timeout(30_000),
       },
     )
-    const finalUrl = res.url || ''
-    return finalUrl.split('/tag/')[1] || null
-  } catch (e) {
-    console.warn(
-      `[fetch-search] release tag resolve failed: ${e instanceof Error ? e.message : e}`,
-    )
-    return null
+    tag = (res.url || '').split('/tag/')[1] || tag
+  } catch {
+    /* 上游 latest 解析失败时用钉住的版本 */
   }
-}
-
-async function ensureSearchTool(t, tool, tag) {
-  const dir = t.dir
-  const destDir = join('src', 'utils', 'vendor', 'search-tools', dir)
-  const destBin = join(destDir, tool)
-  if (existsSync(destBin)) {
-    console.log(`[fetch-search] ${dir}/${tool}: already present, skipping`)
-    return true
-  }
-  const triple = SEARCH_TOOL_TRIPLES[dir]
-  if (!triple) return false
-  if (!tag) {
-    console.warn('[fetch-search] no release found in search-tools-prebuilt')
-    return false
-  }
-  const url = `${SEARCH_TOOLS_BASE}/${tag}/${tool}-${triple}`
+  const url = `https://github.com/Genivia/ugrep/releases/download/${tag}/ugrep-windows-x64.zip`
   try {
-    console.log(`[fetch-search] ${dir}/${tool}: trying ${url}`)
+    console.log(`[fetch-search] x64-win32/ugrep: trying ${url}`)
     const buf = await fetchBuffer(url)
-    if (buf.length < 20_000) {
-      console.warn(
-        `[fetch-search] ${dir}/${tool}: payload too small (${buf.length}B)`,
-      )
+    const work = mkdtempSync(join(tmpdir(), 'ccb-ugrep-win-'))
+    const zipPath = join(work, 'ugrep.zip')
+    const extractDir = join(work, 'x')
+    mkdirSync(extractDir, { recursive: true })
+    writeFileSync(zipPath, buf)
+    extract(zipPath, 'zip', extractDir)
+    const extracted = findBinary(extractDir, 'ugrep.exe')
+    rmSync(work, { recursive: true, force: true })
+    if (!extracted) {
+      console.warn('[fetch-search] x64-win32/ugrep: not found in zip')
       return false
     }
     mkdirSync(destDir, { recursive: true })
-    writeFileSync(destBin, buf)
-    chmodSync(destBin, 0o755)
+    copyFileSync(extracted, destBin)
     console.log(
-      `[fetch-search] ${dir}/${tool}: installed (${Math.round(buf.length / 1024)} KB)`,
+      `[fetch-search] x64-win32/ugrep: installed (${Math.round(buf.length / 1024)} KB)`,
     )
     return true
   } catch (e) {
     console.warn(
-      `[fetch-search] ${dir}/${tool}: failed: ${e instanceof Error ? e.message : e}`,
+      `[fetch-search] x64-win32/ugrep: failed: ${e instanceof Error ? e.message : e}`,
     )
     return false
   }
 }
 
 let failed = 0
-let searchFailed = 0
-const searchTag = await searchToolsReleaseTag()
 for (const t of TARGETS) {
   const ok = await ensureTarget(t)
   if (!ok) {
@@ -284,11 +277,44 @@ for (const t of TARGETS) {
       `[fetch-rg] ${t.dir}: all sources failed — product for this target ships without embedded rg`,
     )
   }
-  // bfs/ugrep 预取（可选增强，失败不阻塞）
-  for (const tool of ['bfs', 'ugrep']) {
-    const okTool = await ensureSearchTool(t, tool, searchTag)
-    if (!okTool) searchFailed++
+}
+await ensureUgrepWin()
+
+// ── 完整性闸门：bfs 4 平台 + ugrep 5 平台，缺一即失败 ──────────────────────
+// bfs-windows 豁免（上游无官方支持）。CI 场景 vendor 已由 native artifact
+// 填充，此处全部 existsSync 命中 → 直接通过。
+{
+  const missingBfs = [
+    'x64-linux',
+    'arm64-linux',
+    'x64-darwin',
+    'arm64-darwin',
+  ].filter(
+    d => !existsSync(join('src', 'utils', 'vendor', 'search-tools', d, 'bfs')),
+  )
+  const missingUgrep = [
+    'x64-linux',
+    'arm64-linux',
+    'x64-darwin',
+    'arm64-darwin',
+    'x64-win32',
+  ].filter(
+    d =>
+      !existsSync(join('src', 'utils', 'vendor', 'search-tools', d, 'ugrep')) &&
+      !existsSync(
+        join('src', 'utils', 'vendor', 'search-tools', d, 'ugrep.exe'),
+      ),
+  )
+  if (missingBfs.length > 0 || missingUgrep.length > 0) {
+    console.error(
+      `[fetch-search] INCOMPLETE: bfs missing [${missingBfs.join(', ')}], ugrep missing [${missingUgrep.join(', ')}]`,
+    )
+    console.error(
+      '[fetch-search] Embedded search tools are mandatory — build aborted. Trigger the search-tools-prebuilt workflow first, or sync native artifacts.',
+    )
+    process.exit(1)
   }
+  console.log('[fetch-search] completeness gate passed (bfs x4, ugrep x5)')
 }
 console.log(
   `[fetch-rg] done: rg ${TARGETS.length - failed}/${TARGETS.length}, search-tools ${TARGETS.length * 2 - searchFailed}/${TARGETS.length * 2}`,

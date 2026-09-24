@@ -24,6 +24,7 @@ const ALL_TARGETS = [
   'bun-darwin-x64',
   'bun-darwin-arm64',
   'bun-windows-x64',
+  'bun-windows-arm64',
 ]
 
 const requested = process.argv.slice(2)
@@ -75,6 +76,7 @@ function targetToTriple(target: string): string {
     'bun-darwin-x64': 'x86_64-apple-darwin',
     'bun-darwin-arm64': 'aarch64-apple-darwin',
     'bun-windows-x64': 'x86_64-pc-windows-msvc',
+    'bun-windows-arm64': 'aarch64-pc-windows-msvc',
   }
   return map[target] ?? 'unknown'
 }
@@ -102,6 +104,7 @@ function targetToRgDir(target: string): string {
     'bun-darwin-x64': 'x64-darwin',
     'bun-darwin-arm64': 'arm64-darwin',
     'bun-windows-x64': 'x64-win32',
+    'bun-windows-arm64': 'arm64-win32',
   }
   return map[target] ?? 'unknown'
 }
