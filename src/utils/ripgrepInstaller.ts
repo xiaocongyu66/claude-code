@@ -17,9 +17,23 @@ import { isEnvTruthy } from './envUtils.js'
 
 export const RG_VERSION = '15.2.0'
 
-const RG_RELEASE_BASE =
-  process.env.CCB_RG_DOWNLOAD_URL ??
-  `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
+const RG_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
+
+// Mirror list for environments where github direct download is slow or
+// blocked. Mirrors are prefix-style proxies: `${mirror}/${githubUrl}`.
+// CCB_RG_MIRRORS (comma-separated) overrides the defaults; an empty entry
+// in the list means "official direct".
+const DEFAULT_MIRRORS = ['', 'https://gh-proxy.com', 'https://ghfast.top']
+
+function mirrorBases(): string[] {
+  const raw = process.env.CCB_RG_MIRRORS
+  const list = raw
+    ? raw.split(',').map(m => m.trim())
+    : DEFAULT_MIRRORS
+  return list
+    .map(m => m.replace(/\/$/, ''))
+    .filter(m => m === '' || /^https?:\/\//.test(m))
+}
 
 type AssetSpec = { file: string; kind: 'tar.gz' | 'zip' }
 
@@ -86,19 +100,33 @@ async function installRipgrep(): Promise<boolean> {
   }
   const started = Date.now()
   try {
-    const url = `${RG_RELEASE_BASE}/${spec.file}`
-    logForDebugging(`[rg-install] downloading ${url}`)
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
-    if (!res.ok) {
-      logForDebugging(`[rg-install] download failed: HTTP ${res.status}`)
-      logEvent('rg_install_failed', { reason: `http_${res.status}` })
+    const githubUrl = `${RG_RELEASE_BASE}/${spec.file}`
+    // Official first unless a mirror list explicitly puts mirrors ahead;
+    // each candidate is downloaded and magic-checked before use.
+    const candidates = mirrorBases().map(base =>
+      base === '' ? githubUrl : `${base}/${githubUrl}`,
+    )
+    const workDir = mkdtempSync(path.resolve(tmpdir(), 'ccb-rg-'))
+    const extractDir = path.resolve(workDir, 'x')
+    let archive: Buffer | null = null
+    for (const url of candidates) {
+      logForDebugging(`[rg-install] trying ${url}`)
+      const buf = await downloadArchive(url)
+      if (buf && hasValidMagic(buf, spec.kind)) {
+        archive = buf
+        logForDebugging(`[rg-install] got valid archive from ${url}`)
+        break
+      }
+      if (buf) logForDebugging(`[rg-install] bad payload (html/error page?) from ${url}`)
+    }
+    if (!archive) {
+      logForDebugging('[rg-install] all mirrors failed')
+      logEvent('rg_install_failed', { reason: 'all_mirrors' })
       return false
     }
-    const workDir = mkdtempSync(path.resolve(tmpdir(), 'ccb-rg-'))
-    const archivePath = path.resolve(workDir, spec.file)
-    writeFileSync(archivePath, Buffer.from(await res.arrayBuffer()))
 
-    const extractDir = path.resolve(workDir, 'x')
+    const archivePath = path.resolve(workDir, spec.file)
+    writeFileSync(archivePath, archive)
     mkdirSync(extractDir, { recursive: true })
     // bsdtar (Windows 10+) handles zip; GNU tar handles tar.gz.
     await extractArchive(archivePath, extractDir)
@@ -122,6 +150,29 @@ async function installRipgrep(): Promise<boolean> {
     logEvent('rg_install_failed', { reason: 'exception' })
     return false
   }
+}
+
+async function downloadArchive(url: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(90_000) })
+    if (!res.ok) {
+      logForDebugging(`[rg-install] HTTP ${res.status} from ${url}`)
+      return null
+    }
+    return Buffer.from(await res.arrayBuffer())
+  } catch (err) {
+    logForDebugging(
+      `[rg-install] fetch error from ${url}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return null
+  }
+}
+
+/** Guard against HTML error/redirect pages being treated as archives. */
+function hasValidMagic(buf: Buffer, kind: 'tar.gz' | 'zip'): boolean {
+  if (buf.length < 8) return false
+  if (kind === 'zip') return buf[0] === 0x50 && buf[1] === 0x4b // "PK"
+  return buf[0] === 0x1f && buf[1] === 0x8b // gzip
 }
 
 function extractArchive(archivePath: string, destDir: string): Promise<void> {
