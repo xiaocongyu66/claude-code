@@ -21,34 +21,19 @@ import { isMainlandChinaExit, rankedMirrors } from './mirrors.js'
 // Full multi-platform ripgrep installer, following the official README's
 // per-platform install matrix (https://github.com/BurntSushi/ripgrep):
 //
-//   Debian/Ubuntu  release .deb  → dpkg -i (sudo -n when not root)
-//   Fedora/RHEL    release .rpm  → rpm -i
-//   other Linux    tarball       → rg into a writable $PATH dir
-//   macOS          tarball       → rg into /usr/local/bin (PATH)
-//   Windows        zip           → rg.exe into a writable PATH dir
+//   Debian/Ubuntu (amd64)  release .deb  → dpkg -i (sudo -n when not root)
+//   all other platforms    tarball/zip   → rg into a writable $PATH dir
 //
-// Package-manager installs get man pages / completions / clean uninstall;
-// the tarball path is the universal fallback. Final safety net when no
-// PATH entry is writable: the private ~/.claude vendor dir. Resolution
-// priority lives in config.ts (system PATH rg → downloaded → vendored).
+// Official 15.2.0 ships no rpm and no arm64 deb, so the tarball path is
+// the universal fallback. Final safety net when no PATH entry is
+// writable: the private ~/.claude vendor dir. Resolution priority lives
+// in config.ts (system PATH rg → downloaded → vendored).
 
 export const RG_VERSION = '15.2.0'
 
 const RG_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
 
 type AssetSpec = { file: string; kind: 'tar.gz' | 'zip' | 'deb' | 'rpm' }
-
-// Debian arch names: amd64 / arm64; RPM arch names: x86_64 / aarch64.
-function debArch(arch: string): string | null {
-  if (arch === 'x64') return 'amd64'
-  if (arch === 'arm64') return 'arm64'
-  return null
-}
-function rpmArch(arch: string): string | null {
-  if (arch === 'x64') return 'x86_64'
-  if (arch === 'arm64') return 'aarch64'
-  return null
-}
 
 // Mirrors the layout.ts ${arch}-${platform} directory scheme.
 export function rgAssetSpec(platform: string, arch: string): AssetSpec | null {
@@ -64,10 +49,13 @@ export function rgAssetSpec(platform: string, arch: string): AssetSpec | null {
     return null
   }
   if (platform === 'linux') {
-    const da = debArch(arch)
-    if (da) return { file: `ripgrep_${RG_VERSION}-1_${da}.deb`, kind: 'deb' }
-    const ra = rpmArch(arch)
-    if (ra) return { file: `ripgrep-${RG_VERSION}-1.${ra}.rpm`, kind: 'rpm' }
+    // Official 15.2.0 ships only an amd64 .deb (no rpm, no arm64 deb);
+    // everything else falls back to the tarball path.
+    if (arch === 'x64') {
+      return { file: `ripgrep_${RG_VERSION}-1_amd64.deb`, kind: 'deb' }
+    }
+    if (arch === 'arm64')
+      return { file: `ripgrep-${RG_VERSION}-aarch64-unknown-linux-gnu.tar.gz`, kind: 'tar.gz' }
     return null
   }
   return null

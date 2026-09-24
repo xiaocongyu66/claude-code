@@ -35,15 +35,74 @@ try {
 
 // --- Config ---
 
-const RG_VERSION = '15.0.1'
-const DEFAULT_RELEASE_BASE = `https://github.com/microsoft/ripgrep-prebuilt/releases/download/v${RG_VERSION}`
-const MIRROR_RELEASE_BASE = `https://ghproxy.net/https://github.com/microsoft/ripgrep-prebuilt/releases/download/v${RG_VERSION}`
+const RG_VERSION = '15.2.0'
+// Official BurntSushi release (asset names: ripgrep-<ver>-<target>.<ext>).
+const DEFAULT_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
 const RELEASE_BASE = (
   process.env.RIPGREP_DOWNLOAD_BASE ?? DEFAULT_RELEASE_BASE
 ).replace(/\/$/, '')
 
 const scriptDir = path.dirname(__filename)
 const projectRoot = path.resolve(scriptDir, '..')
+
+// --- Live mirror list (same source as src/utils/ripgrep/mirrors.ts) ---
+// ghproxy.txt in the repo is the single source of truth for prefix-style
+// GH accelerators; fetched via jsDelivr git-tree CDNs, first responder
+// wins. Cjs twin of the runtime installer — no shared module available.
+
+const MIRROR_LIST_HOSTS = [
+  'https://cdn.jsdmirror.com',
+  'https://gcore.jsdelivr.net',
+  'https://gcore.jsdelivr.com',
+]
+const MIRROR_LIST_URL_PATH =
+  'gh/xiaocongyu66/claude-code@main/src/utils/ripgrep/ghproxy.txt'
+
+const FALLBACK_MIRRORS = [
+  'https://ghproxy.net',
+  'https://gh.felicity.ac.cn',
+  'https://gh.jasonzeng.dev',
+  'https://github.akams.cn',
+  'https://ghproxy.vip',
+  'https://gh-proxy.ygxz.in',
+  'https://gh.llkk.cc',
+  'https://gh.api.99988866.xyz',
+  'https://gh.con.sh',
+  'https://gh.ddlc.top',
+  'https://gh2.yanqishui.work',
+  'https://ghdl.feizhuqwq.cf',
+  'https://ghproxy.com',
+  'https://ghps.cc',
+  'https://git.xfj0.cn',
+  'https://github.91chi.fun',
+  'https://proxy.zyun.vip',
+  'https://gh-proxy.com',
+  'https://ghfast.top',
+]
+
+async function fetchMirrorList() {
+  try {
+    const lines = await Promise.any(
+      MIRROR_LIST_HOSTS.map(async host => {
+        const res = await fetchRelease(`${host}/${MIRROR_LIST_URL_PATH}`, {
+          signal: AbortSignal.timeout(6000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const parsed = (await res.text())
+          .split('\n')
+          .map(l => l.trim().replace(/\/$/, ''))
+          .filter(l => /^https?:\/\/[\w.-]/.test(l))
+        if (parsed.length === 0) throw new Error('empty mirror list')
+        return parsed
+      }),
+    )
+    console.log(`[ripgrep] mirror list: ${lines.length} proxies`)
+    return lines
+  } catch {
+    console.log('[ripgrep] mirror list unavailable, using built-in fallback')
+    return FALLBACK_MIRRORS
+  }
+}
 
 // --- Platform mapping ---
 
@@ -62,6 +121,7 @@ function getPlatformMapping() {
     if (arch === 'x64') return { target: 'x86_64-pc-windows-msvc', ext: 'zip' }
     if (arch === 'arm64')
       return { target: 'aarch64-pc-windows-msvc', ext: 'zip' }
+    if (arch === 'ia32') return { target: 'i686-pc-windows-msvc', ext: 'zip' }
     throw new Error(`Unsupported Windows arch: ${arch}`)
   }
 
@@ -148,17 +208,18 @@ function tryCurlDownload(url, dest) {
   return result.status === 0 && existsSync(dest) && statSync(dest).size > 0
 }
 
-async function fetchRelease(url) {
+async function fetchRelease(url, options = {}) {
   if (proxyEnvSet()) {
     // Dynamic require so it works in node without bundling issues
     const undici = require('undici')
     return await undici.fetch(url, {
+      ...options,
       redirect: 'follow',
       dispatcher: new undici.EnvHttpProxyAgent(),
     })
   }
   // Node 18+ has global fetch, Bun has it too
-  return await fetch(url, { redirect: 'follow' })
+  return await fetch(url, { ...options, redirect: 'follow' })
 }
 
 async function downloadUrlToBuffer(url) {
@@ -308,32 +369,45 @@ async function extractTarGz(buffer, binaryPath, extractedBinary, assetName) {
 
 async function downloadAndExtract() {
   const { target, ext } = getPlatformMapping()
-  const assetName = `ripgrep-v${RG_VERSION}-${target}.${ext}`
+  const assetName = `ripgrep-${RG_VERSION}-${target}.${ext}`
 
   const binaryPath = getBinaryPath()
   const binaryDir = path.dirname(binaryPath)
+  const stampPath = path.join(binaryDir, '.ccb-rg-version')
 
   const force = process.argv.includes('--force')
-  if (!force && existsSync(binaryPath)) {
-    const stat = statSync(binaryPath)
-    if (stat.size > 0) {
-      console.log(`[ripgrep] Binary already exists at ${binaryPath}, skipping.`)
+  // Version-aware skip: a nonempty binary from an older release must be
+  // replaced, otherwise bundled installs silently stay stale (P2 review).
+  if (!force && existsSync(binaryPath) && statSync(binaryPath).size > 0) {
+    let stamped = null
+    try {
+      stamped = readFileSync(stampPath, 'utf8').trim()
+    } catch {
+      /* no stamp — treat as unknown version */
+    }
+    if (stamped === RG_VERSION) {
+      console.log(`[ripgrep] v${RG_VERSION} already at ${binaryPath}, skipping.`)
       return
     }
+    console.log(
+      `[ripgrep] Existing binary is ${stamped ?? 'unversioned'}, replacing with v${RG_VERSION}.`,
+    )
   }
 
   console.log(`[ripgrep] Downloading v${RG_VERSION} for ${target}...`)
 
   const extractedBinary = process.platform === 'win32' ? 'rg.exe' : 'rg'
 
-  const mirrors = [RELEASE_BASE]
-  if (RELEASE_BASE === DEFAULT_RELEASE_BASE.replace(/\/$/, '')) {
-    mirrors.push(MIRROR_RELEASE_BASE.replace(/\/$/, ''))
-  }
+  // Official direct first; every configured accelerator as fallback.
+  const mirrorBases = await fetchMirrorList()
+  const candidates = [
+    RELEASE_BASE,
+    ...mirrorBases.map(m => `${m}/${DEFAULT_RELEASE_BASE}`),
+  ]
 
   let buffer
   let lastError
-  for (const base of mirrors) {
+  for (const base of candidates) {
     const url = `${base}/${assetName}`
     try {
       console.log(`[ripgrep] Trying ${url}`)
@@ -364,8 +438,9 @@ async function downloadAndExtract() {
     if (process.platform !== 'win32') {
       chmodSync(binaryPath, 0o755)
     }
+    writeFileSync(stampPath, RG_VERSION)
 
-    console.log(`[ripgrep] Installed to ${binaryPath}`)
+    console.log(`[ripgrep] Installed v${RG_VERSION} to ${binaryPath}`)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     const hint =
