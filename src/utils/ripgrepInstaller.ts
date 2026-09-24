@@ -30,27 +30,17 @@ const RG_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download
 const GH_REPO = 'xiaocongyu66/claude-code'
 const REPO_TAG = 'main'
 
-// The live mirror list lives in the repo (ghproxy.txt, one proxy per line)
-// so proxies can be added/retired without shipping code. Fetched via
-// jsDelivr git-tree CDNs — first valid responder wins. Priority:
-// CCB_RG_MIRRORS env > remote ghproxy.txt > built-in fallback below.
+// The mirror list lives in the repo (ghproxy.txt, one proxy per line) so
+// proxies can be added/retired without shipping code. Fetched via jsDelivr
+// git-tree CDNs — first valid responder wins. No hardcoded proxy list:
+// when every CDN fails (or env is unset) the official GitHub URL is the
+// only remaining source. CCB_RG_MIRRORS env still overrides.
 const MIRROR_LIST_HOSTS = [
   'https://cdn.jsdmirror.com',
   'https://gcore.jsdelivr.net',
-  'https://cdn.jsdelivr.net',
+  'https://gcore.jsdelivr.com',
 ]
 const MIRROR_LIST_PATH = `gh/${GH_REPO}@${REPO_TAG}/ghproxy.txt`
-
-const FALLBACK_MIRRORS = [
-  'https://ghproxy.net',
-  'https://gh-proxy.com',
-  'https://ghfast.top',
-  'https://ghproxy.vip',
-  'https://gh.llkk.cc',
-  'https://github.akams.cn',
-  'https://gh.jasonzeng.dev',
-  'https://gitproxy.dev',
-]
 
 let remoteMirrorCache: string[] | null = null
 
@@ -139,10 +129,8 @@ export async function rankedMirrors(githubUrl: string): Promise<string[]> {
   const bases = (
     process.env.CCB_RG_MIRRORS
       ? process.env.CCB_RG_MIRRORS.split(',').map(m => m.trim())
-      : (await fetchRemoteMirrorList()) ?? FALLBACK_MIRRORS
+      : ((await fetchRemoteMirrorList()) ?? [])
   )
-    .map(m => m.replace(/\/$/, ''))
-    .filter(m => /^https?:\/\//.test(m))
   const speeds = await Promise.all(
     bases.map(async m => ({ m, s: await speedTestMirror(m, githubUrl) })),
   )
