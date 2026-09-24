@@ -107,8 +107,8 @@ for (const name of [
 }
 
 const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
-await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
-console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
+await cp('src/utils/ripgrep/vendor', ripgrepDir, { recursive: true })
+console.log(`Copied src/utils/ripgrep/vendor/ → ${ripgrepDir}/`)
 
 // Step 5: Generate cli-bun and cli-node executable entry points
 const cliBun = join(outdir, 'cli-bun.js')

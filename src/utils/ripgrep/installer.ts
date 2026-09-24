@@ -13,163 +13,24 @@ import {
 import { tmpdir } from 'os'
 import * as path from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
-import { logForDebugging } from './debug.js'
-import { distRoot } from './distRoot.js'
-import { isEnvTruthy } from './envUtils.js'
+import { logForDebugging } from '../debug.js'
+import { isEnvTruthy } from '../envUtils.js'
+import { rgUserBinary, rgUserDir } from './layout.js'
+import { isMainlandChinaExit, rankedMirrors } from './mirrors.js'
 
-// Auto-install / self-update ripgrep. The repo vendors prebuilt rg binaries
-// for common platforms under src/utils/vendor/ripgrep/; platforms without a
-// vendored binary (e.g. Windows arm64) download on first use. When a vendored
-// binary is present but older than RG_VERSION, a silent background update
-// downloads to a /tmp staging dir, verifies, then atomically replaces it.
+// Download / self-update for the managed rg binary (~/.claude/vendor).
+// Resolution priority lives in config.ts: system PATH rg first, then this
+// auto-downloaded binary, then the repo-vendored fallback. When the
+// managed binary is present but older than RG_VERSION a silent background
+// update stages into /tmp, verifies, and atomically swaps it in.
 
 export const RG_VERSION = '15.2.0'
 
 const RG_RELEASE_BASE = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}`
 
-const GH_REPO = 'xiaocongyu66/claude-code'
-const REPO_TAG = 'main'
-
-// The mirror list lives in the repo (ghproxy.txt, one proxy per line) so
-// proxies can be added/retired without shipping code. Fetched via jsDelivr
-// git-tree CDNs — first valid responder wins. No hardcoded proxy list:
-// when every CDN fails (or env is unset) the official GitHub URL is the
-// only remaining source. CCB_RG_MIRRORS env still overrides.
-const MIRROR_LIST_HOSTS = [
-  'https://cdn.jsdmirror.com',
-  'https://gcore.jsdelivr.net',
-  'https://gcore.jsdelivr.com',
-]
-const MIRROR_LIST_PATH = `gh/${GH_REPO}@${REPO_TAG}/ghproxy.txt`
-
-// Offline fallback when every jsDelivr CDN fails to serve ghproxy.txt.
-const FALLBACK_MIRRORS = [
-  'https://ghproxy.net',
-  'https://gh.felicity.ac.cn',
-  'https://gh.jasonzeng.dev',
-  'https://github.akams.cn',
-  'https://ghproxy.vip',
-  'https://gh-proxy.ygxz.in',
-  'https://gh.llkk.cc',
-  'https://gh.api.99988866.xyz',
-  'https://gh.con.sh',
-  'https://gh.ddlc.top',
-  'https://gh2.yanqishui.work',
-  'https://ghdl.feizhuqwq.cf',
-  'https://ghproxy.com',
-  'https://ghps.cc',
-  'https://git.xfj0.cn',
-  'https://github.91chi.fun',
-  'https://proxy.zyun.vip',
-  'https://gh-proxy.com',
-  'https://ghfast.top',
-]
-
-let remoteMirrorCache: string[] | null = null
-
-async function fetchRemoteMirrorList(): Promise<string[] | null> {
-  if (remoteMirrorCache) return remoteMirrorCache
-  try {
-    const lines = await Promise.any(
-      MIRROR_LIST_HOSTS.map(async host => {
-        const res = await fetch(`${host}/${MIRROR_LIST_PATH}`, {
-          signal: AbortSignal.timeout(6_000),
-        })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const parsed = (await res.text())
-          .split('\n')
-          .map(l => l.trim().replace(/\/$/, ''))
-          .filter(l => /^https?:\/\/[\w.-]/.test(l))
-        if (parsed.length === 0) throw new Error('empty mirror list')
-        return parsed
-      }),
-    )
-    remoteMirrorCache = lines
-    logForDebugging(`[rg-install] remote mirror list: ${lines.length} proxies`)
-    return lines
-  } catch {
-    logForDebugging('[rg-install] remote mirror list unavailable; using fallback')
-    return null
-  }
-}
-
-// ── exit IP detection ────────────────────────────────────────────────────────
-
-let cnExitCache: boolean | null = null
-
-/**
- * True when the egress IP is in mainland China (use mirrors). Undetectable
- * network fails open to CN behavior — mirrors are probed by speed anyway
- * and the official URL remains the final fallback.
- */
-export async function isMainlandChinaExit(): Promise<boolean> {
-  if (cnExitCache !== null) return cnExitCache
-  const probes: Array<{ url: string; pick: (d: unknown) => string | undefined }> = [
-    { url: 'https://api.ip.sb/geoip', pick: d => (d as { country_code?: string })?.country_code },
-    { url: 'https://ipapi.co/json/', pick: d => (d as { country_code?: string })?.country_code },
-    { url: 'http://ip-api.com/json/?fields=countryCode', pick: d => (d as { countryCode?: string })?.countryCode },
-  ]
-  for (const p of probes) {
-    try {
-      const res = await fetch(p.url, { signal: AbortSignal.timeout(4000) })
-      if (!res.ok) continue
-      const code = p.pick(await res.json())
-      if (code) {
-        cnExitCache = code.toUpperCase() === 'CN'
-        logForDebugging(`[rg-install] exit IP ${code} → ${cnExitCache ? 'mirrors' : 'direct'}`)
-        return cnExitCache
-      }
-    } catch {
-      // next probe
-    }
-  }
-  cnExitCache = true
-  return cnExitCache
-}
-
-// ── speed test (2 MB range probe per mirror) ────────────────────────────────
-
-const SPEED_TEST_BYTES = 2 * 1024 * 1024
-
-async function speedTestMirror(mirror: string, githubUrl: string): Promise<number> {
-  const start = Date.now()
-  try {
-    const res = await fetch(`${mirror}/${githubUrl}`, {
-      headers: { Range: `bytes=0-${SPEED_TEST_BYTES - 1}` },
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!res.ok && res.status !== 206) return 0
-    const size = (await res.arrayBuffer()).byteLength
-    if (size < 100 * 1024) return 0
-    return size / 1024 / ((Date.now() - start) / 1000) // KB/s
-  } catch {
-    return 0
-  }
-}
-
-/** Mirrors ranked by measured KB/s (fastest first), dead ones dropped. */
-export async function rankedMirrors(githubUrl: string): Promise<string[]> {
-  const bases = (
-    process.env.CCB_RG_MIRRORS
-      ? process.env.CCB_RG_MIRRORS.split(',').map(m => m.trim())
-      : ((await fetchRemoteMirrorList()) ?? FALLBACK_MIRRORS)
-  )
-  const speeds = await Promise.all(
-    bases.map(async m => ({ m, s: await speedTestMirror(m, githubUrl) })),
-  )
-  speeds.sort((a, b) => b.s - a.s)
-  const ranked = speeds.filter(x => x.s > 0).map(x => x.m)
-  logForDebugging(
-    `[rg-install] mirror speed ranking: ${speeds.map(x => `${x.m.replace('https://', '')}=${Math.round(x.s)}KB/s`).join(' ')}`,
-  )
-  return ranked
-}
-
-// ── vendor layout ────────────────────────────────────────────────────────────
-
 type AssetSpec = { file: string; kind: 'tar.gz' | 'zip' }
 
-// Mirrors getRipgrepConfig's ${process.arch}-${process.platform} layout.
+// Mirrors the layout.ts ${arch}-${platform} directory scheme.
 export function rgAssetSpec(platform: string, arch: string): AssetSpec | null {
   if (platform === 'win32') {
     if (arch === 'x64') return { file: `ripgrep-${RG_VERSION}-x86_64-pc-windows-msvc.zip`, kind: 'zip' }
@@ -190,36 +51,22 @@ export function rgAssetSpec(platform: string, arch: string): AssetSpec | null {
   return null
 }
 
-/** Vendor directory for the running platform (created on install). */
-export function rgVendorDir(platform = process.platform, arch = process.arch): string {
-  const dir = platform === 'win32' ? `${arch}-win32` : `${arch}-${platform}`
-  return path.resolve(distRoot, 'vendor', 'ripgrep', dir)
-}
-
-/** Binary path inside the vendor dir, mirroring getRipgrepConfig. */
-export function rgVendorBinary(platform = process.platform, arch = process.arch): string {
-  const name = platform === 'win32' ? 'rg.exe' : 'rg'
-  return path.resolve(rgVendorDir(platform, arch), name)
-}
-
 function versionStamp(): string | null {
   try {
-    return readFileSync(path.resolve(rgVendorDir(), '.version'), 'utf8').trim()
+    return readFileSync(path.resolve(rgUserDir(), '.version'), 'utf8').trim()
   } catch {
     return null
   }
 }
 
-// ── install / update ─────────────────────────────────────────────────────────
-
 let installPromise: Promise<boolean> | null = null
 
 /**
- * Ensure the vendored rg exists for this platform, downloading it on first
- * use (or when force-refreshing a stale binary). Single-flight.
+ * Ensure the managed rg exists, downloading it on first use (or when
+ * force-refreshing a stale binary). Single-flight.
  */
 export function ensureVendoredRipgrep(force = false): Promise<boolean> {
-  if (!force && existsSync(rgVendorBinary())) return Promise.resolve(true)
+  if (!force && existsSync(rgUserBinary())) return Promise.resolve(true)
   installPromise ??= installRipgrep().finally(() => {
     installPromise = null
   })
@@ -227,14 +74,14 @@ export function ensureVendoredRipgrep(force = false): Promise<boolean> {
 }
 
 /**
- * Silent background self-update: vendored binary exists but its .version
+ * Silent background self-update: managed binary exists but its .version
  * stamp is older than RG_VERSION. Fire-and-forget; on success the caller's
  * memoized rg config is invalidated so the next call picks the new binary.
  */
 export function refreshIfStale(onUpdated?: () => void): void {
-  if (!existsSync(rgVendorBinary())) return
+  if (!existsSync(rgUserBinary())) return
   if (versionStamp() === RG_VERSION) return
-  logForDebugging(`[rg-install] stale vendored rg (${versionStamp()} < ${RG_VERSION}); background update`)
+  logForDebugging(`[rg-install] stale rg (${versionStamp()} < ${RG_VERSION}); background update`)
   void ensureVendoredRipgrep(true).then(ok => {
     if (ok) onUpdated?.()
   })
@@ -305,11 +152,11 @@ async function installRipgrep(): Promise<boolean> {
   }
 }
 
-/** Stage the verified binary into the vendor layout (tmp file → rename). */
+/** Stage the verified binary into the user vendor layout (tmp → rename). */
 function installBinary(src: string): void {
-  const destDir = rgVendorDir()
+  const destDir = rgUserDir()
   mkdirSync(destDir, { recursive: true })
-  const destBin = rgVendorBinary()
+  const destBin = rgUserBinary()
   const staging = `${destBin}.download`
   copyFileSync(src, staging)
   if (process.platform !== 'win32') chmodSync(staging, 0o755)

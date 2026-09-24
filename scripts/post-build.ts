@@ -65,8 +65,8 @@ async function postBuild() {
   console.log(`Copied vendor/audio-capture/ → ${audioCaptureDir}/`)
 
   const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
-  await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true } as never)
-  console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
+  await cp('src/utils/ripgrep/vendor', ripgrepDir, { recursive: true } as never)
+  console.log(`Copied src/utils/ripgrep/vendor/ → ${ripgrepDir}/`)
 
   // Native NAPI binaries built by .github/workflows/build-native.yml.
   // Copied only when the CI-produced .node artifacts are present locally

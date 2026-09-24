@@ -16,7 +16,7 @@ import { pathExists } from '../file.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getPlatform } from '../platform.js'
-import { ripgrepCommand } from '../ripgrep.js'
+import { ripgrepCommand } from '../ripgrep/index.js'
 import { subprocessEnv } from '../subprocessEnv.js'
 import { quote } from './shellQuote.js'
 

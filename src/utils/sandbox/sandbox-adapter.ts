@@ -56,7 +56,7 @@ import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFe
 import { errorMessage } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
-import { ripgrepCommand } from '../ripgrep.js'
+import { ripgrepCommand } from '../ripgrep/index.js'
 
 // Local copies to avoid circular dependency
 // (permissions.ts imports SandboxManager, bashPermissions.ts imports permissions.ts)

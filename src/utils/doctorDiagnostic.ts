@@ -31,7 +31,7 @@ import {
   getPackageManager,
 } from './nativeInstaller/packageManagers.js'
 import { getPlatform } from './platform.js'
-import { getRipgrepStatus } from './ripgrep.js'
+import { getRipgrepStatus } from './ripgrep/index.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'

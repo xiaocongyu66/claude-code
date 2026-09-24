@@ -17,7 +17,7 @@ import type { FrontmatterData } from './frontmatterParser.js'
 import { parseFrontmatter } from './frontmatterParser.js'
 import { findCanonicalGitRoot, findGitRoot } from './git.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
-import { ripGrep } from './ripgrep.js'
+import { ripGrep } from './ripgrep/index.js'
 import {
   isSettingSourceEnabled,
   type SettingSource,

@@ -249,7 +249,7 @@ export const init = memoize(async (): Promise<void> => {
     // Surface ripgrep fallback (e.g. Android/Termux) once per session.
     // Goes to stderr so it doesn't corrupt pipe-mode (`-p`) stdout.
     try {
-      const { getRipgrepStatus } = await import('../utils/ripgrep.js')
+      const { getRipgrepStatus } = await import('../utils/ripgrep/index.js')
       const status = getRipgrepStatus()
       if (status.note) {
         process.stderr.write(`[ripgrep] ${status.note}\n`)

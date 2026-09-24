@@ -70,7 +70,7 @@ import {
   persistFileSnapshotIfRemote,
 } from './plans.js'
 import { getPlatform } from './platform.js'
-import { countFilesRoundedRg } from './ripgrep.js'
+import { countFilesRoundedRg } from './ripgrep/index.js'
 import { jsonStringify } from './slowOperations.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import { getToolSchemaCache } from './toolSchemaCache.js'
